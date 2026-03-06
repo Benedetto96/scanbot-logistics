@@ -3,24 +3,16 @@ import anthropic
 import mysql.connector
 import os
 
-# --- FUNÇÃO DE SEGURANÇA PARA AMBIENTES (LOCAL vs RENDER) ---
-def get_secret(key):
-    """Busca no st.secrets (Local/Streamlit Cloud) ou variáveis de ambiente (Render)"""
-    try:
-        return st.secrets[key]
-    except (KeyError, FileNotFoundError, RuntimeError):
-        return os.environ.get(key)
-
-# Carregando configurações
-API_KEY = get_secret("ANTHROPIC_API_KEY")
-MODELO_CLAUDE = "claude-sonnet-4-20250514"
+# --- CONFIGURAÇÕES VIA VARIÁVEIS DE AMBIENTE (RENDER) ---
+API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+MODELO_CLAUDE = "claude-3-5-sonnet-20240620"
 
 DB_CONFIG = {
-    "host": get_secret("DB_HOST"),
-    "port": int(get_secret("DB_PORT") or 25086),
-    "user": get_secret("DB_USER"),
-    "password": get_secret("DB_PASSWORD"),
-    "database": get_secret("DB_NAME"),
+    "host": os.environ.get("DB_HOST"),
+    "port": int(os.environ.get("DB_PORT", 25086)),
+    "user": os.environ.get("DB_USER"),
+    "password": os.environ.get("DB_PASSWORD"),
+    "database": os.environ.get("DB_NAME"),
     "charset": "utf8"
 }
 
@@ -68,7 +60,7 @@ REGRAS DE QUERY (OBRIGATÓRIO):
 
 REGRAS DE RESPOSTA:
 - Use a função `executar_sql` para cada pergunta.
-- **ÊNFASE NA TIMELINE (OBRIGATÓRIO)**: Ao responder, você deve sempre enfatizar qual timeline de data foi utilizada na consulta, escrevendo-a em caixa alta e entre aspas. 
+- **ÊNFASE NA TIMELINE (OBRIGATÓRIO)**: Ao responder, você deve sempre enfatizar qual timeline de data foi utilizada na consulta, escrevendo-a em caixa alta e entre aspas.
   - Se usou `Data de abertura`, chame de **"ABERTOS"**.
   - Se usou `ETD`, chame de **"PREVISTOS PARA SAIR (ETD)"**.
   - Se usou `ETA`, chame de **"PREVISTOS PARA CHEGAR (ETA)"**.
@@ -120,59 +112,40 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL..."):
+if prompt := st.chat_input("Ex: Pesquise o volume..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        tools = [{
-            "name": "executar_sql",
-            "description": "Consulta o banco MySQL",
-            "input_schema": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"]
-            }
-        }]
+        tools = [{"name": "executar_sql", "description": "Consulta o banco MySQL", 
+                  "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}]
 
         response = client.messages.create(
-            model=MODELO_CLAUDE,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=tools,
+            model=MODELO_CLAUDE, max_tokens=1024, system=SYSTEM_PROMPT, tools=tools,
             messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
         )
 
         if response.stop_reason == "tool_use":
             tool_use = next(b for b in response.content if b.type == "tool_use")
-            query_gerada = tool_use.input["query"]
-            resultado_bruto = rodar_query_mysql(query_gerada)
+            resultado_bruto = rodar_query_mysql(tool_use.input["query"])
             
             final_response = client.messages.create(
-                model=MODELO_CLAUDE,
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
+                model=MODELO_CLAUDE, max_tokens=1024, system=SYSTEM_PROMPT,
                 messages=[
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": response.content},
                     {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]}
                 ]
             )
-            # Verificação de segurança para evitar IndexError
-            final_response = client.messages.create(
-            model=MODELO_CLAUDE,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": response.content},
-                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]}
-            ]
-        )
-
-        # --- A CORREÇÃO ESTÁ AQUI ---
-        if final_response.content and len(final_response.content) > 0:
-            resposta_final = final_response.content[0].text
+            
+            # --- VERIFICAÇÃO DE SEGURANÇA (EVITA IndexError) ---
+            if final_response.content and len(final_response.content) > 0:
+                resposta_final = final_response.content[0].text
+            else:
+                resposta_final = "Erro ao processar resposta do banco ou da IA."
         else:
-            resposta_final = "Desculpe, a IA não conseguiu gerar uma resposta estruturada a partir dos dados do banco."
+            resposta_final = response.content[0].text if response.content else "IA sem resposta."
+
+        st.markdown(resposta_final)
+        st.session_state.messages.append({"role": "assistant", "content": resposta_final})
