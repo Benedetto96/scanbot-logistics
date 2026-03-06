@@ -5,11 +5,11 @@ import os
 
 # --- CONFIGURAÇÕES VIA VARIÁVEIS DE AMBIENTE (RENDER) ---
 API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODELO_CLAUDE = "claude-3-5-sonnet-20240620"
+MODELO_CLAUDE = "claude-sonnet-4-20250514"
 
 DB_CONFIG = {
     "host": os.environ.get("DB_HOST"),
-    "port": int(os.environ.get("DB_PORT", 25086)),
+    "port": os.environ.get("DB_PORT"),
     "user": os.environ.get("DB_USER"),
     "password": os.environ.get("DB_PASSWORD"),
     "database": os.environ.get("DB_NAME"),
@@ -121,29 +121,26 @@ if prompt := st.chat_input("Ex: Pesquise o volume..."):
         tools = [{"name": "executar_sql", "description": "Consulta o banco MySQL", 
                   "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}]
 
+        # Primeira chamada
         response = client.messages.create(
             model=MODELO_CLAUDE, max_tokens=1024, system=SYSTEM_PROMPT, tools=tools,
-            messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
+            messages=st.session_state.messages
         )
 
+        # Processamento da ferramenta ou resposta direta
         if response.stop_reason == "tool_use":
             tool_use = next(b for b in response.content if b.type == "tool_use")
             resultado_bruto = rodar_query_mysql(tool_use.input["query"])
             
-            final_response = client.messages.create(
-                model=MODELO_CLAUDE, max_tokens=1024, system=SYSTEM_PROMPT,
-                messages=[
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": response.content},
-                    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]}
-                ]
-            )
+            # Adiciona o histórico necessário para o Claude processar o resultado
+            st.session_state.messages.append({"role": "assistant", "content": response.content})
+            st.session_state.messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]})
             
-            # --- VERIFICAÇÃO DE SEGURANÇA (EVITA IndexError) ---
-            if final_response.content and len(final_response.content) > 0:
-                resposta_final = final_response.content[0].text
-            else:
-                resposta_final = "Erro ao processar resposta do banco ou da IA."
+            final_response = client.messages.create(
+                model=MODELO_CLAUDE, max_tokens=1024, system=SYSTEM_PROMPT, tools=tools,
+                messages=st.session_state.messages
+            )
+            resposta_final = final_response.content[0].text
         else:
             resposta_final = response.content[0].text if response.content else "IA sem resposta."
 
