@@ -1,0 +1,6 @@
+streamlit
+anthropic
+mysql-connector-python
+pymysql
+sqlalchemy
+pandas
