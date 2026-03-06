@@ -2,27 +2,18 @@ import streamlit as st
 import anthropic
 import mysql.connector
 import ssl
-import os  # Adicione esta importação
+import os
 
-# --- FUNÇÃO PARA PEGAR SEGREDOS EM QUALQUER LUGAR ---
-def get_secret(key):
-    """Busca a chave no st.secrets (local/Streamlit Cloud) ou no ambiente (Render)"""
-    try:
-        return st.secrets[key]
-    except (KeyError, FileNotFoundError, RuntimeError):
-        return os.environ.get(key)
-
-# --- CONFIGURAÇÕES DE ACESSO ---
-API_KEY = get_secret("ANTHROPIC_API_KEY")
+API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODELO_CLAUDE = "claude-sonnet-4-20250514"
 
 # Configurações do seu MySQL na Aiven (Nuvem)
 DB_CONFIG = {
-    "host": get_secret("DB_HOST"),
-    "port": int(get_secret("DB_PORT") or 25086),
-    "user": get_secret("DB_USER"),
-    "password": get_secret("DB_PASSWORD"),
-    "database": get_secret("DB_NAME"), # Adicione esta linha
+    "host": os.environ.get("DB_HOST"),
+    "port": int(os.environ.get("DB_PORT", 25086)),
+    "user": os.environ.get("DB_USER"),
+    "password": os.environ.get("DB_PASSWORD"),
+    "database": os.environ.get("DB_NAME"),
     "charset": "utf8"
 }
 # System Prompt com todas as suas regras de negócio integradas
