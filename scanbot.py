@@ -1,22 +1,30 @@
 import streamlit as st
 import anthropic
 import mysql.connector
-import ssl
 import os
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+# --- FUNÇÃO DE SEGURANÇA PARA AMBIENTES (LOCAL vs RENDER) ---
+def get_secret(key):
+    """Busca no st.secrets (Local/Streamlit Cloud) ou variáveis de ambiente (Render)"""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError, RuntimeError):
+        return os.environ.get(key)
+
+# Carregando configurações
+API_KEY = get_secret("ANTHROPIC_API_KEY")
 MODELO_CLAUDE = "claude-sonnet-4-20250514"
 
-# Configurações do seu MySQL na Aiven (Nuvem)
 DB_CONFIG = {
-    "host": os.environ.get("DB_HOST"),
-    "port": os.environ.get("DB_PORT"),
-    "user": os.environ.get("DB_USER"),
-    "password": os.environ.get("DB_PASSWORD"),
-    "database": os.environ.get("DB_NAME"),
+    "host": get_secret("DB_HOST"),
+    "port": int(get_secret("DB_PORT") or 25086),
+    "user": get_secret("DB_USER"),
+    "password": get_secret("DB_PASSWORD"),
+    "database": get_secret("DB_NAME"),
     "charset": "utf8"
 }
-# System Prompt com todas as suas regras de negócio integradas
+
+# --- SYSTEM PROMPT COMPLETO ---
 SYSTEM_PROMPT = """
 Você é o SCANBOT, analista de dados sênior da Scan Global Logistics. Sua única fonte é a tabela `massa_operacional`.
 
@@ -66,7 +74,6 @@ REGRAS DE RESPOSTA:
   - Se usou `ETA`, chame de **"PREVISTOS PARA CHEGAR (ETA)"**.
   - Se usou `EMBARQUE`, chame de **"EMBARCADOS"**.
   - Se usou `CHEGADA`, chame de **"ATRACADOS/CHEGADOS"**.
-  - Exemplo: "No mês de janeiro temos 400 TEUS **'ABERTOS'**."
 - Use tabelas Markdown para exibir listas ou comparações.
 - Formate porcentagens com `%` e médias/somas de forma legível.
 - Se o banco retornar vazio, informe que não encontrou registros para os filtros.
@@ -90,63 +97,45 @@ def rodar_query_mysql(query):
 # --- INTERFACE STREAMLIT ---
 st.set_page_config(page_title="SCANBOT - LATAM", layout="wide")
 
-# CSS Reforçado para forçar a cor do título e das bolhas de texto
 st.markdown("""
     <style>
-    /* Força a cor no h1 do Streamlit */
-    div[data-testid="stHeader"] + div blockquote h1, 
-    .main h1, 
-    .custom-title {
-        color: #D11242 !important;
-        font-weight: bold !important;
+    div[data-testid="stHeader"] + div blockquote h1, .main h1, .custom-title {
+        color: #D11242 !important; font-weight: bold !important;
     }
-    
-    /* Fundo da pergunta do usuário e texto branco */
     div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from user"]) {
-        background-color: #D11242 !important;
-        border-radius: 10px;
+        background-color: #D11242 !important; border-radius: 10px;
     }
-    
-    /* Garante que o texto dentro do balão do usuário seja branco */
     div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from user"]) p {
         color: white !important;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# Título usando a classe customizada
 st.markdown('<h1 class="custom-title"> SCAN IA - Commercial Performance </h1>', unsafe_allow_html=True)
 
-# Inicializar histórico de conversa
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Exibir histórico
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Entrada do usuário
-if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL pela nossas linhas temporais = Abetura, Confirmação e Previsão Embarque e Chegada"):
+if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Definição da Tool
         tools = [{
             "name": "executar_sql",
-            "description": "Consulta o banco MySQL blulogistics na tabela massa_operacional",
+            "description": "Consulta o banco MySQL",
             "input_schema": {
                 "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "A query SQL formatada conforme as regras do sistema."}
-                },
+                "properties": {"query": {"type": "string"}},
                 "required": ["query"]
             }
         }]
 
-        # 1. Envio para o Claude
         response = client.messages.create(
             model=MODELO_CLAUDE,
             max_tokens=1024,
@@ -155,14 +144,11 @@ if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL pela nossas linha
             messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
         )
 
-        # 2. Verificar Tool Use
         if response.stop_reason == "tool_use":
             tool_use = next(b for b in response.content if b.type == "tool_use")
             query_gerada = tool_use.input["query"]
-            
             resultado_bruto = rodar_query_mysql(query_gerada)
             
-            # 3. Formatar resposta final
             final_response = client.messages.create(
                 model=MODELO_CLAUDE,
                 max_tokens=1024,
@@ -170,21 +156,16 @@ if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL pela nossas linha
                 messages=[
                     {"role": "user", "content": prompt},
                     {"role": "assistant", "content": response.content},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use.id,
-                                "content": resultado_bruto,
-                            }
-                        ],
-                    },
-                ],
+                    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]}
+                ]
             )
-            resposta_final = final_response.content[0].text
+            # Verificação de segurança para evitar IndexError
+            if final_response.content:
+                resposta_final = final_response.content[0].text
+            else:
+                resposta_final = "Erro ao processar resposta do banco."
         else:
-            resposta_final = response.content[0].text
+            resposta_final = response.content[0].text if response.content else "IA não retornou resposta."
 
         st.markdown(resposta_final)
         st.session_state.messages.append({"role": "assistant", "content": resposta_final})
