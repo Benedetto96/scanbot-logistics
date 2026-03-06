@@ -160,12 +160,19 @@ if prompt := st.chat_input("Ex: Pesquise o volume de FCL e LCL..."):
                 ]
             )
             # Verificação de segurança para evitar IndexError
-            if final_response.content:
-                resposta_final = final_response.content[0].text
-            else:
-                resposta_final = "Erro ao processar resposta do banco."
-        else:
-            resposta_final = response.content[0].text if response.content else "IA não retornou resposta."
+            final_response = client.messages.create(
+            model=MODELO_CLAUDE,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": response.content},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use.id, "content": resultado_bruto}]}
+            ]
+        )
 
-        st.markdown(resposta_final)
-        st.session_state.messages.append({"role": "assistant", "content": resposta_final})
+        # --- A CORREÇÃO ESTÁ AQUI ---
+        if final_response.content and len(final_response.content) > 0:
+            resposta_final = final_response.content[0].text
+        else:
+            resposta_final = "Desculpe, a IA não conseguiu gerar uma resposta estruturada a partir dos dados do banco."
